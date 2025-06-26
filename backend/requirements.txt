@@ -1,0 +1,10 @@
+fastapi==0.109.2
+uvicorn==0.27.1
+requests==2.32.4
+python-dotenv==1.0.0
+asyncio==3.4.3
+transformers
+langchain
+langchain-huggingface
+huggingface_hub
+pydantic_settings

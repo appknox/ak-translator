@@ -1,0 +1,16 @@
+{
+  "name": "ak-translations",
+  "version": "1.0.0",
+  "description": "Translation validation service with React frontend and Python backend",
+  "scripts": {
+    "bootstrap": "npm run bootstrap:frontend && npm run bootstrap:backend",
+    "bootstrap:frontend": "cd frontend && npm install",
+    "bootstrap:backend": "cd backend && python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt",
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "source .venv/bin/activate && cd backend && python -m uvicorn main:app --reload"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
