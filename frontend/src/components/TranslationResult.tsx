@@ -10,6 +10,7 @@ import {
   Tooltip,
 } from '@mui/material'
 
+import { useState } from 'react'
 import { CopyBlock, atomOneDark } from 'react-code-blocks'
 import CopyAllIcon from '@mui/icons-material/CopyAll'
 import type { TranslationResponse } from '@/App'
@@ -19,10 +20,13 @@ interface TranslationResultProps {
 }
 
 const TranslationResult = ({ result }: TranslationResultProps) => {
-  const isJsonText = (text: string | Record<string, string>) => {
+  const [, setCopied] = useState(false)
+
+  const handleCopy = (text: string) => navigator.clipboard.writeText(text).then(() => setCopied(true))
+
+  const isJsonText = (text: string | Record<string, string>): text is Record<string, string> => {
     try {
       JSON.parse(String(text))
-
       return true
     } catch {
       return false
@@ -43,7 +47,7 @@ const TranslationResult = ({ result }: TranslationResultProps) => {
           Translation Results
         </Typography>
 
-        <Typography variant="caption" color="var(--text-secondary)" sx={{ maxWidth: '800px' }}>
+        <Typography variant="body2" color="var(--text-secondary)" sx={{ maxWidth: '800px' }}>
           Please review the translations before using them as they may contain errors. You can copy the translations to
           your clipboard by clicking the copy icon. The stars indicate the estimated accuracy of the translation.
         </Typography>
@@ -80,7 +84,7 @@ const TranslationResult = ({ result }: TranslationResultProps) => {
                   />
                 </Tooltip>
 
-                <IconButton>
+                <IconButton onClick={() => handleCopy(JSON.stringify(translation.text))}>
                   <CopyAllIcon />
                 </IconButton>
               </Stack>
@@ -90,16 +94,14 @@ const TranslationResult = ({ result }: TranslationResultProps) => {
           <AccordionDetails sx={{ backgroundColor: 'var(--neutral-grey-100)', borderRadius: 1 }}>
             {isJsonText(translation.text) ? (
               <CopyBlock
-                text={JSON.stringify(JSON.parse(String(translation.text)), null, 2)}
+                text={JSON.stringify(JSON.parse(String(translation.text)), null, 4)}
                 language="json"
                 showLineNumbers={true}
                 wrapLongLines
                 theme={atomOneDark}
               />
             ) : (
-              <Typography>
-                {typeof translation.text === 'string' ? translation.text : JSON.stringify(translation.text, null, 2)}
-              </Typography>
+              <Typography>{translation.text}</Typography>
             )}
           </AccordionDetails>
         </Accordion>

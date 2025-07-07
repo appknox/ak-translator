@@ -17,9 +17,10 @@ import type { TranslationResponse } from '@/App'
 
 interface TranslationFormProps {
   onTranslationComplete: (result: TranslationResponse) => void
+  clearTranslationResult: () => void
 }
 
-const TranslationForm = ({ onTranslationComplete }: TranslationFormProps) => {
+const TranslationForm = ({ onTranslationComplete, clearTranslationResult }: TranslationFormProps) => {
   const [text, setText] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
@@ -31,10 +32,18 @@ const TranslationForm = ({ onTranslationComplete }: TranslationFormProps) => {
     setIsLoading(true)
 
     try {
+      let body
+
+      try {
+        body = JSON.parse(text)
+      } catch {
+        body = text
+      }
+
       const requestConfig = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text }),
+        body: JSON.stringify({ text: body }),
       }
 
       const response = await fetch('http://localhost:8000/translate', requestConfig)
@@ -68,7 +77,7 @@ const TranslationForm = ({ onTranslationComplete }: TranslationFormProps) => {
             <Typography variant="caption">
               Supported languages:{' '}
               <Typography variant="caption" color="var(--text-primary)" fontWeight={600}>
-                Japanese, Spanish (LATAM), Vietnamese, and Indonesian.
+                Arabic, French, Japanese, Portuguese, and Spanish
               </Typography>
             </Typography>
           )
@@ -114,9 +123,21 @@ const TranslationForm = ({ onTranslationComplete }: TranslationFormProps) => {
         </Button>
 
         {text.trim() && (
-          <IconButton onClick={() => setText('')} sx={{ background: 'var(--neutral-grey-100)' }}>
-            <Tooltip title="Clear text">
-              <DeleteIcon />
+          <IconButton
+            disabled={isLoading}
+            onClick={() => {
+              setText('')
+              clearTranslationResult()
+            }}
+          >
+            <Tooltip title="Clear Translations">
+              <DeleteIcon
+                sx={{
+                  '&:hover': {
+                    fill: 'var(--primary-main)',
+                  },
+                }}
+              />
             </Tooltip>
           </IconButton>
         )}

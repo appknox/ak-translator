@@ -17,6 +17,7 @@ export interface TranslationResponse {
 
 const App = () => {
   const [translationResult, setTranslationResult] = useState<TranslationResponse | null>(null)
+  const clearTranslationResult = () => setTranslationResult(null)
 
   return (
     <ThemeProvider theme={theme}>
@@ -36,11 +37,11 @@ const App = () => {
           justifyContent: 'flex-start',
         }}
       >
-        <TranslationForm onTranslationComplete={setTranslationResult} />
+        <TranslationForm onTranslationComplete={setTranslationResult} clearTranslationResult={clearTranslationResult} />
 
         {translationResult && (
           <React.Fragment>
-            <Divider sx={{ my: 4, width: '100%', borderColor: 'var(--neutral-grey-200)' }} />
+            <Divider sx={{ my: 4, width: '100%', borderColor: 'var(--neutral-grey-200)', maxWidth: '800px' }} />
             <TranslationResult result={translationResult} />
           </React.Fragment>
         )}
