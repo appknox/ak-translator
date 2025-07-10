@@ -59,7 +59,11 @@ def translate_system_prompt():
         """
             You are a professional polyglot translator specializing in translating text from English into a target language.
             The content can range from 
-                
+
+            CRITICAL INFORMATION:
+            if {defective_keys} is not empty, only fix the keys those keys are in the \n {current_translation} and update the {current_translation} with the fixed keys.
+            \n\nThis means that you are likely translating a JSON object and the keys are not accurately translated.
+
             CRITICAL OUTPUT REQUIREMENTS:
             - Output ONLY the translated content
             - Do NOT include any explanatory text, headers, or meta-commentary
@@ -105,12 +109,18 @@ def review_system_prompt():
 
         All reviews info/output text should be in English language.
 
+        CRITICAL INFORMATION:
+        \n\n
+        current_translation: \n\n{current_translation}
+        \n\n
+        original_input_query: \n\n{original_input_query}
+
         ## Review Workflow:
         - Analyze the translation for accuracy and completeness.
         - Check that there is no mixture of languages in the translation.
         - If JSON, ensure that the keys are not translated. Also, ensure that the values are translated without mixing up the languages.
         - Verify the translation is accurate and preserves the original meaning and context.
-        - Provide a report on the quality of the translation, including any issues with the translation.
+        - Provide a report on the quality of the translation, including any issues with the translation. Max character limit is 100.
 
         REQUIRED OUTPUT FORMAT:           
         {format_instructions}

@@ -43,7 +43,12 @@ class TranslatorGraph:
         self.graph = self._build_graph()
 
     def create_llm_instance(self):
-        return ChatAnthropic(model="claude-sonnet-4-20250514")
+        return ChatAnthropic(
+            model="claude-sonnet-4-20250514",
+            temperature=0.0,
+            max_tokens=20000,
+            top_p=1.0,
+        )
 
     def execute(
         self,
@@ -60,6 +65,10 @@ class TranslatorGraph:
                 "target_language": target_language,
                 "is_json": is_json,
                 "is_string": is_string,
+                "translation_state": {
+                    "current_translation": ({} if is_json else {} if is_string else ""),
+                    "iteration": 0,
+                },
             }
         )
 
@@ -154,12 +163,33 @@ class TranslatorGraph:
 
         llm_input_query = f"Translate the following text into {state.target_language}: \n\n{state.original_input_query}"
         state.llm_input_query = llm_input_query
+        initial_iteration = state.translation_state.iteration
 
         result: TranslationState = self.shared_node_logic(
-            state, translate_system_prompt(), TranslationState
+            state,
+            translate_system_prompt(),
+            TranslationState,
+            {
+                "defective_keys": (
+                    state.review_state.defective_keys if state.review_state else []
+                ),
+                "current_translation": (
+                    state.translation_state.current_translation
+                    if state.translation_state
+                    else ""
+                ),
+            },
         )
 
+        # reset the defective keys after each iteration
+        if state.review_state and len(state.review_state.defective_keys):
+            state.review_state.defective_keys = []
+
         state.translation_state = result
+
+        state.translation_state.iteration = (
+            max(initial_iteration, state.translation_state.iteration) + 1
+        )
 
         return state
 
@@ -169,11 +199,36 @@ class TranslatorGraph:
         print("Calling review_node")
         print("--------------------------------")
 
-        llm_input_query = f"Review the following translation: {state.translation_state.current_translation}"
+        llm_input_query = f"""
+        Review the following translation: \n{state.translation_state.current_translation} 
+        The original text is: \n{state.original_input_query}
+        The target language is: \n{state.target_language}
+        The translation is in JSON format: \n{state.is_json}
+        The translation is in string format: \n{state.is_string}
+        """
+
         state.llm_input_query = llm_input_query
 
+        # if maximum iterations reached, approve the translation
+        if (
+            state.translation_state
+            and state.translation_state.iteration == 2
+            and state.review_state
+        ):
+            state.review_state.review_decision = "APPROVE"
+            state.review_state.review_reasoning = "Maximum iterations reached"
+
+            return state
+
+        # if not, review the translation
         result: ReviewState = self.shared_node_logic(
-            state, review_system_prompt(), ReviewState
+            state,
+            review_system_prompt(),
+            ReviewState,
+            {
+                "current_translation": state.translation_state.current_translation,
+                "original_input_query": state.original_input_query,
+            },
         )
 
         state.review_state = result
