@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import DeleteIcon from '@mui/icons-material/Delete'
 
 import {
@@ -14,51 +14,60 @@ import {
 } from '@mui/material'
 
 import type { TranslationResponse } from '@/App'
+import wsClient, { TranslationResult } from '@/services/websocket'
 
 interface TranslationFormProps {
   onTranslationComplete: (result: TranslationResponse) => void
   clearTranslationResult: () => void
+  isLoadingTranslations: boolean
+  setIsLoadingTranslations: (isLoading: boolean) => void
 }
 
-const TranslationForm = ({ onTranslationComplete, clearTranslationResult }: TranslationFormProps) => {
+const TranslationForm = ({
+  onTranslationComplete,
+  clearTranslationResult,
+  isLoadingTranslations,
+  setIsLoadingTranslations,
+}: TranslationFormProps) => {
   const [text, setText] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // Connect to WebSocket and set up event listeners
+  useEffect(() => {
+    wsClient.onConnect = () => console.log('WebSocket connected')
+    wsClient.onDisconnect = () => console.log('WebSocket disconnected')
+
+    // Update the translation result when a language is completed
+    wsClient.onLanguageCompleted = (result: TranslationResult) => {
+      if (result.target_language && result.final_translation) {
+        onTranslationComplete({
+          [result.target_language]: result,
+        })
+      }
+    }
+
+    // Update the translation result when a language is in progress
+    wsClient.onProgress = () => setIsLoadingTranslations(true)
+
+    wsClient.onTranslationError = (error: string) => {
+      setError(error)
+      setIsLoadingTranslations(false)
+    }
+
+    wsClient.onAllCompleted = () => setIsLoadingTranslations(false)
+    wsClient.connect()
+
+    return () => wsClient.disconnect()
+  }, [onTranslationComplete, setIsLoadingTranslations])
+
+  // Reset translations and translate the text when the form is submitted
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
 
     setError('')
-    setIsLoading(true)
+    clearTranslationResult()
 
-    try {
-      let body
-
-      try {
-        body = JSON.parse(text)
-      } catch {
-        body = text
-      }
-
-      const requestConfig = {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: body }),
-      }
-
-      const response = await fetch('http://localhost:8000/translate', requestConfig)
-
-      if (!response.ok) {
-        throw new Error('Translation failed')
-      }
-
-      const data = await response.json()
-      onTranslationComplete(data)
-    } catch {
-      setError('Failed to translate text. Please try again.')
-    } finally {
-      setIsLoading(false)
-    }
+    wsClient.translateMultiple(text)
   }
 
   return (
@@ -115,18 +124,19 @@ const TranslationForm = ({ onTranslationComplete, clearTranslationResult }: Tran
         <Button
           type="submit"
           variant="contained"
-          disabled={!text.trim() || isLoading}
+          disabled={!text.trim() || isLoadingTranslations}
           sx={{ minWidth: 200, gap: 1, boxShadow: 'none' }}
         >
-          {isLoading && <CircularProgress size={20} sx={{ color: 'var(--neutral-grey-500)' }} />}
-          {isLoading ? 'Translating...' : 'Translate to All Languages'}
+          {isLoadingTranslations && <CircularProgress size={20} sx={{ color: 'var(--neutral-grey-500)' }} />}
+          {isLoadingTranslations ? 'Translating...' : 'Translate to All Languages'}
         </Button>
 
         {text.trim() && (
           <IconButton
-            disabled={isLoading}
+            disabled={isLoadingTranslations}
             onClick={() => {
               setText('')
+              setError('')
               clearTranslationResult()
             }}
           >
