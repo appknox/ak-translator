@@ -22,6 +22,8 @@ huggingface-hub = "*"
 pydantic-settings = "*"
 torch = "*"
 sentencepiece = "*"
+langchain-anthropic = "*"
+langchain-google-genai = "*"
 
 [dev-packages]
 

@@ -1,4 +1,3 @@
-import random
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
@@ -16,11 +15,7 @@ async def translate(request: TranslationRequest) -> TranslationResponse:
 
         for language in SUPPORTED_LANGUAGES:
             result = translator_service.process_translation(request.text, language)
-
-            translations[language] = {
-                "text": result,
-                "accuracy": random.random() * 5,
-            }
+            translations[language] = result
 
         return JSONResponse(content={"translations": translations})
     except Exception as e:
