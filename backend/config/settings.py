@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     LANGSMITH_ENDPOINT: str = os.getenv("LANGSMITH_ENDPOINT", "")
     LANGSMITH_TRACING: bool = os.getenv("LANGSMITH_TRACING", False)
 
+    # Anthropic settings
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY")
+    GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
