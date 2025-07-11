@@ -7,6 +7,7 @@ load_dotenv()
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = os.getenv("PROJECT_NAME")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL")
     VERSION: str = os.getenv("VERSION")
     HF_TOKEN: str = os.getenv("HF_TOKEN")
     CORS_ORIGINS: str = os.getenv("CORS_ORIGINS")
