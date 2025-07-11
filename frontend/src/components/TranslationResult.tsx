@@ -94,7 +94,7 @@ const TranslationResult = ({ result }: TranslationResultProps) => {
 
           <AccordionDetails sx={{ backgroundColor: 'var(--neutral-grey-100)', borderRadius: 1 }}>
             <Stack spacing={2}>
-              {translation.is_json ? (
+              {typeof translation.final_translation === 'object' ? (
                 <CopyBlock
                   text={JSON.stringify(translation.final_translation, null, 2)}
                   language="json"

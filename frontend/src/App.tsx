@@ -9,8 +9,6 @@ import TranslationLoading from '@/components/TranslationLoading'
 
 export interface TranslationResponse {
   [language: string]: {
-    is_json: boolean
-    is_string: boolean
     original_input: string
     target_language: string
     final_translation: string | object
