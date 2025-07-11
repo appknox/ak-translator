@@ -7,6 +7,7 @@ from routes.translation import router
 from websocket.manager import ws_manager
 from websocket.handlers import handle_websocket_message
 
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
