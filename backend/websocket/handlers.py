@@ -86,8 +86,15 @@ async def translate_single_language(
             },
         )
 
+        # Reset cache if it's the last language
+        is_last_language = language == all_languages[-1]
+
         # Perform translation
-        result = translator_service.process_translation(text, language)
+        result = translator_service.process_translation(
+            text=text,
+            target_language=language,
+            reset_cache=is_last_language,
+        )
 
         # Send completed translation immediately
         await ws_manager.send_to_client(

@@ -1,27 +1,31 @@
 import re
-import json
-from typing import Type
+from typing import Union
 
 from langchain_core.messages import BaseMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain.output_parsers import RetryWithErrorOutputParser
 from langgraph.graph import END, StateGraph
-from langchain_anthropic import ChatAnthropic
-from langchain.prompts import HumanMessagePromptTemplate, SystemMessagePromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+from langchain.prompts import (
+    ChatPromptTemplate,
+)
 
 
 from .state import (
-    AgentState,
+    QueryInfoState,
+    QueryAssessmentState,
+    TranslationAgentState,
     TranslationState,
     ReviewState,
     FormatState,
-    QueryInfoState,
     FixedMalformedJsonState,
 )
 
 from .prompts import (
     output_format_instructions,
     translate_system_prompt,
+    redo_translate_system_prompt,
     review_system_prompt,
     format_translation_system_prompt,
     query_assessment_system_prompt,
@@ -40,33 +44,37 @@ class TranslatorGraph:
 
     def __init__(self):
         self.llm = self.create_llm_instance()
-        self.graph = self._build_graph()
+        self.query_assessment_graph = self._build_query_assessment_graph()
+        self.graph = self._build_translation_graph()
 
     def create_llm_instance(self):
-        return ChatAnthropic(
-            model="claude-sonnet-4-20250514",
-            temperature=0.0,
-            max_tokens=20000,
+        return ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            temperature=0,
+            max_tokens=None,
             top_p=1.0,
         )
 
-    def execute(
+    def execute_query_assessment(self, input_query: str) -> QueryAssessmentState:
+        print("--------------------------------")
+        print("input_query")
+        print(input_query)
+        print("--------------------------------")
+
+        return self.query_assessment_graph.invoke({"input_query": input_query})
+
+    def execute_translation(
         self,
         input_query: str,
         target_language: str,
-        is_json: bool = False,
-        is_string: bool = False,
     ):
 
         return self.graph.invoke(
             {
-                "original_input_query": input_query,
-                "llm_input_query": input_query,
+                "input_query": input_query,
                 "target_language": target_language,
-                "is_json": is_json,
-                "is_string": is_string,
                 "translation_state": {
-                    "current_translation": ({} if is_json else {} if is_string else ""),
+                    "current_translation": "",
                     "iteration": 0,
                 },
             }
@@ -74,213 +82,271 @@ class TranslatorGraph:
 
     def shared_node_logic(
         self,
-        state: AgentState,
+        state: TranslationAgentState,
         prompt: str,
-        pydantic_object: Type[
-            QueryInfoState | TranslationState | ReviewState | FormatState
+        pydantic_object: Union[
+            TranslationState,
+            ReviewState,
+            FormatState,
+            FixedMalformedJsonState,
+            QueryAssessmentState,
         ],
-        partials: dict = {},
-    ) -> AgentState:
+    ) -> TranslationAgentState:
         """Shared node logic."""
-        llm_input_query = state.llm_input_query
-
         parser = PydanticOutputParser(pydantic_object=pydantic_object)
-
-        system = SystemMessagePromptTemplate.from_template(prompt)
-        human = HumanMessagePromptTemplate.from_template("{llm_input_query}")
-
-        format_structure = pydantic_object.model_json_schema()
-        format_instructions = output_format_instructions(format_structure)
-
-        prompt = (system + human).partial(
-            format_instructions=format_instructions, **partials
-        )
 
         # retry parser
         retry_parser = RetryWithErrorOutputParser.from_llm(parser=parser, llm=self.llm)
 
         # llm call
         llm_call = prompt | self.llm
-        result = llm_call.invoke({"llm_input_query": llm_input_query})
+        result = llm_call.invoke({"input_query": state.input_query})
         cleaned_content = self._parse_result(result)
 
         result = retry_parser.parse_with_prompt(
-            cleaned_content, prompt.invoke(llm_input_query)
+            cleaned_content, prompt.invoke({"input_query": state.input_query})
         )
 
         return result
 
-    def fix_malformed_json(self, state: AgentState) -> AgentState:
-        """Fix malformed JSON from the input query."""
-        print("--------------------------------")
-        print("Calling fix_malformed_json")
-        print("--------------------------------")
-
-        llm_input_query = (
-            f"Fix the following malformed JSON: {state.original_input_query}"
-        )
-
-        state.llm_input_query = llm_input_query
-
-        result: FixedMalformedJsonState = self.shared_node_logic(
-            state,
-            malformed_json_system_prompt(),
-            FixedMalformedJsonState,
-            {"issues": state.query_info.malformed_json_issues},
-        )
-
-        state.is_json = True
-        state.is_string = False
-        state.original_input_query = json.dumps(result.fixed_json_content)
-
-        return state
-
-    def query_assessment_node(self, state: AgentState) -> AgentState:
+    def query_assessment_node(
+        self, state: QueryAssessmentState
+    ) -> QueryAssessmentState:
         """Assess the query info."""
         print("--------------------------------")
         print("Calling query_info_node")
         print("--------------------------------")
 
-        llm_input_query = f"Assess the following content: {state.original_input_query}"
-        state.llm_input_query = llm_input_query
+        input_query = state.input_query
 
-        result: QueryInfoState = self.shared_node_logic(
-            state,
-            query_assessment_system_prompt(),
-            QueryInfoState,
-            {"is_string": state.is_string, "is_json": state.is_json},
+        prompt = ChatPromptTemplate.from_template(
+            template=query_assessment_system_prompt(),
+            partial_variables={
+                "input_query": input_query,
+                "format_instructions": output_format_instructions(
+                    QueryInfoState.model_json_schema()
+                ),
+            },
+        )
+
+        result = self.shared_node_logic(
+            state=state,
+            prompt=prompt,
+            pydantic_object=QueryInfoState,
         )
 
         state.query_info = result
 
         return state
 
-    def translate_node(self, state: AgentState) -> AgentState:
+    def fix_malformed_json_node(
+        self, state: QueryAssessmentState
+    ) -> QueryAssessmentState:
+        """Fix the malformed JSON."""
+        print("--------------------------------")
+        print("Calling fix_malformed_json_node")
+        print("--------------------------------")
+
+        prompt = ChatPromptTemplate.from_template(
+            template=malformed_json_system_prompt(),
+            partial_variables={
+                "input_query": state.input_query,
+                "issues": state.query_info.malformed_json_issues,
+                "format_instructions": output_format_instructions(
+                    FixedMalformedJsonState.model_json_schema()
+                ),
+            },
+        )
+
+        result = self.shared_node_logic(
+            state=state,
+            prompt=prompt,
+            pydantic_object=FixedMalformedJsonState,
+        )
+
+        state.fixed_json_state = result
+
+        return state
+
+    def translate_node(self, state: TranslationAgentState) -> TranslationAgentState:
         """Translate the text from English into a target language."""
         print("--------------------------------")
         print("Calling translate_node")
         print("--------------------------------")
 
-        llm_input_query = f"Translate the following text into {state.target_language}: \n\n{state.original_input_query}"
-        state.llm_input_query = llm_input_query
+        should_redo_translation = (
+            state.review_state
+            and state.review_state.review_decision == "REDO"
+            and state.review_state.issues
+            and len(state.review_state.issues) > 0
+        )
+
         initial_iteration = state.translation_state.iteration
 
-        result: TranslationState = self.shared_node_logic(
-            state,
-            translate_system_prompt(),
-            TranslationState,
-            {
-                "defective_keys": (
-                    state.review_state.defective_keys if state.review_state else []
-                ),
-                "current_translation": (
-                    state.translation_state.current_translation
-                    if state.translation_state
-                    else ""
-                ),
-            },
+        format_instructions = output_format_instructions(
+            TranslationState.model_json_schema()
         )
 
-        # reset the defective keys after each iteration
-        if state.review_state and len(state.review_state.defective_keys):
-            state.review_state.defective_keys = []
+        prompt = ChatPromptTemplate.from_template(
+            template=(
+                redo_translate_system_prompt()
+                if should_redo_translation
+                else translate_system_prompt()
+            ),
+            partial_variables=(
+                {
+                    "current_translation": state.translation_state.current_translation,
+                    "issues": state.review_state.issues,
+                    "format_instructions": format_instructions,
+                }
+                if should_redo_translation
+                else {
+                    "input_query": state.input_query,
+                    "target_language": state.target_language,
+                    "format_instructions": format_instructions,
+                }
+            ),
+        )
+
+        result = self.shared_node_logic(
+            state=state,
+            prompt=prompt,
+            pydantic_object=TranslationState,
+        )
 
         state.translation_state = result
+        state.translation_state.iteration = initial_iteration + 1
 
-        state.translation_state.iteration = (
-            max(initial_iteration, state.translation_state.iteration) + 1
-        )
+        # reset review state
+        if should_redo_translation:
+            state.review_state.review_decision = None
+            state.review_state.issues = []
+            state.review_state.review_reasoning = ""
+            state.review_state.review_translation_rating = 0
 
         return state
 
-    def review_node(self, state: AgentState) -> AgentState:
+    def review_node(self, state: TranslationAgentState) -> TranslationAgentState:
         """Review the translation of a text from English into a target language."""
         print("--------------------------------")
         print("Calling review_node")
         print("--------------------------------")
 
-        llm_input_query = f"""
-        Review the following translation: \n{state.translation_state.current_translation} 
-        The original text is: \n{state.original_input_query}
-        The target language is: \n{state.target_language}
-        The translation is in JSON format: \n{state.is_json}
-        The translation is in string format: \n{state.is_string}
-        """
-
-        state.llm_input_query = llm_input_query
-
-        # if maximum iterations reached, approve the translation
+        # if maximum number of iterations reached, end the workflow
         if (
-            state.translation_state
+            state.review_state
+            and state.translation_state
             and state.translation_state.iteration == 2
-            and state.review_state
         ):
             state.review_state.review_decision = "APPROVE"
-            state.review_state.review_reasoning = "Maximum iterations reached"
+            state.review_state.review_reasoning = "Maximum number of iterations reached"
+            state.review_state.review_translation_rating = 0
 
             return state
 
-        # if not, review the translation
-        result: ReviewState = self.shared_node_logic(
-            state,
-            review_system_prompt(),
-            ReviewState,
-            {
-                "current_translation": state.translation_state.current_translation,
-                "original_input_query": state.original_input_query,
-            },
+        # if not maximum number of iterations reached, review the translation
+        format_instructions = output_format_instructions(
+            ReviewState.model_json_schema()
+        )
+
+        prompt = ChatPromptTemplate.from_template(
+            template=review_system_prompt(),
+            partial_variables=(
+                {
+                    "current_translation": state.translation_state.current_translation,
+                    "input_query": state.input_query,
+                    "format_instructions": format_instructions,
+                }
+            ),
+        )
+
+        result = self.shared_node_logic(
+            state=state,
+            prompt=prompt,
+            pydantic_object=ReviewState,
         )
 
         state.review_state = result
 
         return state
 
-    def format_translation_node(self, state: AgentState) -> AgentState:
+    def format_translation_node(
+        self, state: TranslationAgentState
+    ) -> TranslationAgentState:
         """Format the translation of a text from English into a target language."""
-        print("--------------------------------")
-        print("Calling format_translation_node")
-        print("--------------------------------")
+        # if input query is a JSON object, do not format the translation
+        current_translation = state.translation_state.current_translation
 
-        llm_input_query = f"Format the following translation: {state.translation_state.current_translation}"
-        state.llm_input_query = llm_input_query
+        if isinstance(current_translation, dict) or isinstance(
+            current_translation, list
+        ):
+            state.format_state = FormatState(
+                final_translation=current_translation,
+                final_translation_rating=state.review_state.review_translation_rating,
+            )
 
-        result: FormatState = self.shared_node_logic(
-            state,
-            format_translation_system_prompt(),
-            FormatState,
-            {
-                "input_query": state.original_input_query,
-                "final_translation": state.translation_state.current_translation,
-            },
+            return state
+
+        # if input query is not a JSON object, format the translation
+        format_instructions = output_format_instructions(
+            FormatState.model_json_schema()
+        )
+
+        prompt = ChatPromptTemplate.from_template(
+            template=format_translation_system_prompt(),
+            partial_variables=(
+                {
+                    "translated_content": state.translation_state.current_translation,
+                    "input_query": state.input_query,
+                    "format_instructions": format_instructions,
+                }
+            ),
+        )
+
+        result = self.shared_node_logic(
+            state=state,
+            prompt=prompt,
+            pydantic_object=FormatState,
         )
 
         state.format_state = result
 
         return state
 
-    def review_router(self, state: AgentState):
+    def review_router(self, state: TranslationAgentState):
         """LLM decides whether to redo translation or end."""
         decision = state.review_state.review_decision
 
         if decision == "REDO":
             return self.TRANSLATE_NODE
 
-        elif decision == "END":
-            return END
-
-        else:
+        elif decision == "APPROVE":
             return self.FORMAT_NODE
-
-    def fix_malformed_json_router(self, state: AgentState):
-        """LLM decides whether to filter out malformed JSON or end."""
-
-        if state.query_info.is_malformed_json:
-            return self.FIX_MALFORMED_JSON_NODE
 
         else:
             return self.TRANSLATE_NODE
 
-    def _parse_result(self, result: BaseMessage) -> AgentState:
+    def query_assessment_router(self, state: QueryAssessmentState):
+        """LLM decides whether to filter out malformed JSON or end."""
+
+        if state.query_info.string_content_type == "malformed_json":
+            return self.FIX_MALFORMED_JSON_NODE
+
+        else:
+            return END
+
+    def fix_malformed_json_router(self, state: QueryAssessmentState):
+        """LLM decides whether to filter out malformed JSON or end."""
+
+        if state.string_content_type == "malformed_json":
+            return self.FIX_MALFORMED_JSON_NODE
+
+        else:
+            return END
+
+    def _parse_result(
+        self, result: BaseMessage
+    ) -> Union[TranslationAgentState, QueryAssessmentState]:
         """Parse the result of the LLM call."""
         cleaned_content = re.sub(
             r"<think>.*?</think>", "", result.content, flags=re.DOTALL
@@ -288,44 +354,52 @@ class TranslatorGraph:
 
         return cleaned_content
 
-    def _build_graph(self) -> StateGraph:
-        """Build the translation workflow graph."""
-        builder = StateGraph(AgentState)
+    def _build_query_assessment_graph(self) -> StateGraph:
+        """Build the query assessment workflow graph."""
+        builder = StateGraph(QueryAssessmentState)
 
-        # Add nodes
         builder.add_node(self.QUERY_ASSESSMENT_NODE, self.query_assessment_node)
-        builder.add_node(self.TRANSLATE_NODE, self.translate_node)
-        builder.add_node(self.FIX_MALFORMED_JSON_NODE, self.fix_malformed_json)
-        builder.add_node(self.REVIEW_NODE, self.review_node)
-        builder.add_node(self.FORMAT_NODE, self.format_translation_node)
+        builder.add_node(self.FIX_MALFORMED_JSON_NODE, self.fix_malformed_json_node)
 
-        # Add edges
+        builder.set_entry_point(self.QUERY_ASSESSMENT_NODE)
+
         builder.add_conditional_edges(
             self.QUERY_ASSESSMENT_NODE,
-            self.fix_malformed_json_router,
+            self.query_assessment_router,
             {
                 self.FIX_MALFORMED_JSON_NODE: self.FIX_MALFORMED_JSON_NODE,
-                self.TRANSLATE_NODE: self.TRANSLATE_NODE,
+                END: END,
             },
         )
 
-        builder.add_edge(self.FIX_MALFORMED_JSON_NODE, self.TRANSLATE_NODE)
-        builder.add_edge(self.TRANSLATE_NODE, self.REVIEW_NODE)
-        builder.add_edge(self.FORMAT_NODE, END)
+        builder.add_edge(self.FIX_MALFORMED_JSON_NODE, END)
 
-        # # Add conditional edges
+        return builder.compile()
+
+    def _build_translation_graph(self) -> StateGraph:
+        """Build the translation workflow graph."""
+        builder = StateGraph(TranslationAgentState)
+
+        # Add nodes
+        builder.add_node(self.TRANSLATE_NODE, self.translate_node)
+        builder.add_node(self.REVIEW_NODE, self.review_node)
+        builder.add_node(self.FORMAT_NODE, self.format_translation_node)
+
+        # Set entry point
+        builder.set_entry_point(self.TRANSLATE_NODE)
+
+        # Add edges
         builder.add_conditional_edges(
             self.REVIEW_NODE,
             self.review_router,
             {
                 self.TRANSLATE_NODE: self.TRANSLATE_NODE,
                 self.FORMAT_NODE: self.FORMAT_NODE,
-                END: END,
             },
         )
 
-        # Set entry point
-        builder.set_entry_point(self.QUERY_ASSESSMENT_NODE)
+        builder.add_edge(self.TRANSLATE_NODE, self.REVIEW_NODE)
+        builder.add_edge(self.FORMAT_NODE, END)
 
         return builder.compile()
 

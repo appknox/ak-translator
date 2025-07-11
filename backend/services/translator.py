@@ -1,29 +1,70 @@
 import json
 from typing import Dict, Any, Union, List, Callable
 from ai_agent.workflow import translator_graph
-from ai_agent.state import AgentState
+from ai_agent.state import TranslationAgentState, QueryAssessmentState
 
 
 class TranslatorService:
     """Translator service."""
 
+    def __init__(self):
+        # Add cache to avoid re-evaluating the same content after first language translation
+        self.content_cache = {
+            "original_input_content": "",
+            "translated_json": {},
+            "text_was_transformed_to_json": False,
+        }
+
+    def perform_query_assessment(
+        self, text: str, target_language: str
+    ) -> QueryAssessmentState:
+        """Perform query assessment to determine if the content should be translated as a JSON object or a string."""
+        assessment_state = translator_graph.execute_query_assessment(input_query=text)
+        fixed_json_state = (
+            assessment_state["fixed_json_state"]
+            if "fixed_json_state" in assessment_state
+            else None
+        )
+
+        text_was_transformed_to_json = fixed_json_state and (
+            fixed_json_state.content_was_fixed
+            or (len(fixed_json_state.fixed_json_content) > 0)
+        )
+
+        # If the content was transformed to a JSON object, translate the JSON object
+        if text_was_transformed_to_json:
+            print("--------------------------------")
+            print("fixed_json_state.fixed_json_content")
+            print(fixed_json_state.fixed_json_content)
+            print("--------------------------------")
+
+            self.content_cache["text_was_transformed_to_json"] = True
+            self.content_cache["translated_json"] = fixed_json_state.fixed_json_content
+            self.content_cache["original_input_content"] = text
+
+            result = self.translate_dict_batched(
+                data=fixed_json_state.fixed_json_content,
+                target_language=target_language,
+            )
+
+            return result
+
+        # If the content was not transformed to a JSON object, translate the string
+        return self.translate_single(text, target_language)
+
     def translate_single(
         self,
         text: str,
         target_language: str,
-        is_string: bool = False,
-        is_json: bool = False,
-    ) -> AgentState:
+    ) -> TranslationAgentState:
         """Translate single text using langgraph."""
-        res = translator_graph.execute(
-            text, target_language, is_string=is_string, is_json=is_json
+        res = translator_graph.execute_translation(
+            input_query=text, target_language=target_language
         )
 
         # Extract just the essential data
         return {
-            "is_json": res["is_json"],
-            "is_string": res["is_string"],
-            "original_input": res["original_input_query"],
+            "original_input": res["input_query"],
             "target_language": res["target_language"],
             "final_translation": res["format_state"].final_translation,
             "translation_rating": res["format_state"].final_translation_rating,
@@ -36,6 +77,7 @@ class TranslatorService:
         self, data: Dict[str, Any], chunk_size: int = 40
     ) -> List[Dict[str, Any]]:
         """Split dictionary into chunks of specified size."""
+
         items = list(data.items())
         chunks = []
 
@@ -54,9 +96,7 @@ class TranslatorService:
     ) -> Dict[str, Any]:
         """Translate a chunk of data."""
         json_string = json.dumps(chunk, ensure_ascii=False, indent=2)
-        translated_json = self.translate_single(
-            json_string, target_language, is_json=True
-        )
+        translated_json = self.translate_single(json_string, target_language)
 
         try:
             if isinstance(translated_json, str):
@@ -73,34 +113,21 @@ class TranslatorService:
             on_chunk_failed(chunk)
 
     def translate_dict_batched(
-        self, data: Dict[str, Any], target_language: str, chunk_size: int = 35
+        self,
+        data: Union[Dict[str, Any], List[Any]],
+        target_language: str,
+        chunk_size: int = 40,
     ) -> Dict[str, Any]:
         """Translate dictionary by sending chunks as JSON strings."""
 
-        # If small enough, translate as single chunk
-        if len(data) <= chunk_size:
-            print("--------------------------------")
-            print("data")
-            print(data)
-            print("--------------------------------")
-
-            translated_json = self.translate_chunk(data, target_language)
-
-            print("--------------------------------")
-            print("translated_json")
-            print(translated_json)
-            print("--------------------------------")
+        if isinstance(data, list):
+            return self.translate_single(data, target_language)
 
         # Split into chunks and translate each
         chunks = self.chunk_dict(data, chunk_size)
         translated_chunks = []
 
         for chunk in chunks:
-            print("--------------------------------")
-            print("chunk")
-            print(chunk)
-            print("--------------------------------")
-
             translated_json = self.translate_chunk(
                 chunk,
                 target_language,
@@ -110,14 +137,10 @@ class TranslatorService:
             translated_chunks.append(translated_json)
 
         # Merge all translated chunks
-        print("--------------------------------")
-        print("translated_chunks")
-        print(translated_chunks)
-        print("--------------------------------")
+        translated_chunks_length = len(translated_chunks)
+        result = translated_chunks[0] if translated_chunks_length > 0 else {}
 
-        result = {}
-
-        if translated_chunks:
+        if translated_chunks_length > 1:
             # Initialize merged objects
             merged_final_translation = {}
             total_iterations = 0
@@ -129,8 +152,6 @@ class TranslatorService:
                 total_iterations += chunk["iterations"]
 
                 # Take single values from last chunk
-                result["is_json"] = chunk["is_json"]
-                result["is_string"] = chunk["is_string"]
                 result["target_language"] = chunk["target_language"]
                 result["translation_rating"] = chunk["translation_rating"]
                 result["review_decision"] = chunk["review_decision"]
@@ -142,19 +163,49 @@ class TranslatorService:
 
         return result
 
+    def reset_cache(self, reset_cache: bool = False):
+        """Reset the content cache after last translation."""
+        if reset_cache:
+            print("--------------------------------")
+            print("cache reset")
+            print("--------------------------------")
+
+            self.content_cache = {
+                "original_input_content": "",
+                "translated_json": {},
+                "text_was_transformed_to_json": False,
+            }
+
     def process_translation(
         self,
         text: Union[str, Dict[str, Any]],
         target_language: str,
-        chunk_size: int = 40,
+        reset_cache: bool = False,
     ):
         """Process translation for either string or dictionary input."""
 
+        # If the same content is being translated to another language,
+        # use the cached translated JSON if available
+        if (
+            self.content_cache["original_input_content"] == text
+            and self.content_cache["text_was_transformed_to_json"]
+        ):
+            text = json.dumps(self.content_cache["translated_json"])
+
+        # If the content is a JSON object, translate the JSON object
         try:
             json_data = json.loads(text)
-            return self.translate_dict_batched(json_data, target_language, chunk_size)
+            result = self.translate_dict_batched(json_data, target_language)
+            self.reset_cache(reset_cache=reset_cache)
+
+            return result
+
+        # If the content is not a JSON object, perform query assessment
         except json.JSONDecodeError:
-            return self.translate_single(text, target_language, is_string=True)
+            result = self.perform_query_assessment(text, target_language)
+            self.reset_cache(reset_cache=reset_cache)
+
+            return result
 
 
 # Create service instance
